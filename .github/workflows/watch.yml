@@ -1,0 +1,48 @@
+name: Watch x-algorithm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check HEAD and wake Grok Bot on change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WAKE_URL: ${{ secrets.WAKE_URL }}
+          WAKE_KEY: ${{ secrets.WAKE_KEY }}
+        run: |
+          set -euo pipefail
+          NEW=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/xai-org/x-algorithm/commits/main | jq -r .sha)
+          OLD=$(cat last_sha.txt 2>/dev/null | tr -d '[:space:]' || true)
+          echo "old=$OLD new=$NEW"
+          if [ -z "$NEW" ] || [ "$NEW" = "null" ] || [ "$NEW" = "$OLD" ]; then
+            echo "No change."; exit 0
+          fi
+          if [ -z "${WAKE_URL:-}" ]; then
+            echo "WAKE_URL secret not set yet"; exit 1
+          fi
+          BODY=$(jq -nc --arg repo xai-org/x-algorithm --arg old "$OLD" --arg new "$NEW" \
+            '{event:"new_commit",repo:$repo,old_sha:$old,new_sha:$new,url:("https://github.com/"+$repo+"/commit/"+$new)}')
+          HDRS=(-H "Content-Type: application/json")
+          if [ -n "${WAKE_KEY:-}" ]; then HDRS+=(-H "Authorization: Bearer $WAKE_KEY"); fi
+          curl -fsS -X POST "${HDRS[@]}" -d "$BODY" "$WAKE_URL"
+          echo "$NEW" > last_sha.txt
+          git config user.name "x-algo-watch"
+          git config user.email "actions@users.noreply.github.com"
+          git add last_sha.txt
+          git commit -m "HEAD -> ${NEW:0:7}"
+          git push
